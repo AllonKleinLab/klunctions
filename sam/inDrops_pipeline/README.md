@@ -30,3 +30,8 @@ The yaml file stores all the information about your sequencing run and the param
 - `fastq_path`: file name structure for the fastq files. Shouldn't need to be changed if you used the `bcl2fastq` command from Step 2.
 - `libraries`: library names and index sequences. See `library_sequences.txt` for our standard set of index sequences. 
 - `bowtie_index`: path to bowtie index to use for mapping+quantification step 
+
+<b> 5. Submit `indrops.py` pipeline  </b>
+``` bash
+bash submit_indrops.sh
+```
