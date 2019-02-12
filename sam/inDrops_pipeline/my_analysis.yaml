@@ -1,0 +1,27 @@
+project_name : "tet"
+project_dir : "output/"
+sequencing_runs : 
+  - name : 'tet_round4'
+    version : 'v3'
+    dir : "/n/groups/klein/sam/merav_indrops/seq_20190205_tet_round4/raw_data/190130_NB501715_0343_AHTNL5BGX9/Data/Intensities/BaseCalls"
+    fastq_path : "Undetermined_S0_{split_affix}_{read}_001.fastq.gz"
+    split_affixes : ["L001", "L002", "L003", "L004"]
+    libraries : 
+      - {library_name: "Cre-1A", library_index: "TTACCTCC"}
+      - {library_name: "Cre-1B", library_index: "CAGTTATG"}
+      - {library_name: "Cre-2A", library_index: "CCTTTACT"}
+      - {library_name: "Cre-2B", library_index: "GAGACGGA"}
+      - {library_name: "C-129-1A", library_index: "AGAAAGCT"}
+      - {library_name: "C-129-1B", library_index: "ACGCTCTT"}
+      - {library_name: "C-129-2A", library_index: "CGCATTCT"}
+      - {library_name: "C-129-2B", library_index: "GGTACTCA"}
+paths : 
+  python_dir : "/n/groups/klein/sam/pyndrops/bin/"
+  samtools_dir : "/n/groups/klein/sam/pipelines/support_programs/samtools-1.3.1/bin/"
+  bowtie_index : "/n/groups/klein/references/mouse_mm10_updateSep2017/mouse.GRCm38"
+parameters : 
+  bowtie_arguments:
+    m : 200
+    n : 1
+    l : 15
+    e : 100
