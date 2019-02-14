@@ -5,13 +5,18 @@ If you used BPF, start an interactive job on O2, then follow the instructions fr
 # Submit interactive job
 srun --pty -p interactive -t 0-4:00 --mem 2000 -n 1 /bin/bash
 
-# Download data (enter your BPF password when prompted)
-scp -r bpf_username@bpfngs.med.harvard.edu:./run_id . 
+# Download data (enter your BPF password when prompted). For example:
+scp -r bpf_username@bpfngs.med.harvard.edu:./FC_04613 . 
+
+# cd into the downloaded directory (e.g., FC_04613) and untar the run folder (e.g., 190130_NB501715_0343_AHTNL5BGX9.tar.gz)
+cd FC_04613
+tar xfz 190130_NB501715_0343_AHTNL5BGX9.tar.gz
 
 ```
 
 <b> 2. Convert bcl files into fastq files  </b>  
-- Edit `submit_bcl2fastq.sh` with the run folder name (folder that was downloaded in Step 1).  
+- Edit `submit_bcl2fastq.sh` with the run folder name (folder that was un-tarred in Step 1). If you've copied `submit_bcl2fastq.sh` into the folder where you ran the previous `tar` command, set the `run` variable in `submit_bcl2fastq.sh` to something like this:  
+`run=n/scratch2/bpf/ngs_source/nextseq/190130_NB501715_0343_AHTNL5BGX9/`
 - Submit the `bcl2fastq` job:
 ```bash 
 bash submit_bcl2fastq.sh
