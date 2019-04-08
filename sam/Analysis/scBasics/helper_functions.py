@@ -720,6 +720,36 @@ def build_adj_mat(edges, n_nodes):
         A[j,i] = 1
     return A.tocsc()
 
+def get_smooth_values(input_values, adjacency_matrix, beta=0.1, n_rounds=10):
+    ''' Smooth values on a graph
+    
+    Example: 
+    (Starting with adata containing PCA coordinates in `adata.obsm['X_pca']`)
+
+    # Get knn edges
+    edges = hf.get_knn_graph(adata.obsm['X_pca'], k=10, return_edges=True)[0]
+
+    # Build adjacency matrix from edges
+    adjacency_matrix = hf.build_adj_mat(edges, adata.shape[0])
+
+    # Get raw data
+    input_data = adata[:, 'Klf1'].X
+
+    # Get smoothed values
+    smoothed_value = get_smooth_values(input_data, adjacency_matrix, beta=0.1, n_rounds=10)
+    '''
+
+    if len(input_values.shape) == 1:
+        smoothed_values = input_values[:, None]
+    else:
+        smoothed_values = input_values.copy()
+
+    adjacency_matrix = hf.sparse_rowwise_multiply(adjacency_matrix, 1 / adjacency_matrix.sum(1).A.squeeze())
+    for iRound in range(n_rounds):
+        smoothed_values = (beta * smoothed_values + ((1 - beta) * adjacency_matrix) * smoothed_values)
+
+    return smoothed_values.squeeze()
+
 ########## CLUSTERING
 
 def get_spectral_clusters(A, k):
@@ -1322,6 +1352,13 @@ def gene_plot(x, y, E, gene_list, gene_name, col_range=(0,100), order_points=Fal
 
 ########## PLOTTING STUFF
 
+def set_plot_defaults(fontsize=10):
+    plt.rcParams['font.family'] = 'sans-serif'
+    plt.rcParams['font.sans-serif'] = 'Arial'
+    plt.rc('font', size=fontsize)
+    plt.rcParams['pdf.fonttype'] = 42
+    return
+
 def darken_cmap(cmap, scale_factor):
     cdat = np.zeros((cmap.N, 4))
     for ii in range(cdat.shape[0]):
@@ -1408,7 +1445,7 @@ def plot_one_gene(E, gene_list, gene_to_plot, x, y, normalize=False, ax=None, or
     return pp
     
 def plot_categorical(x, y, data, ax=None, buffer_pct=0.03, point_size=5, color_map=None, 
-                     show_centroids=False, centroid_label_size=12):
+                     show_centroids=False, centroid_label_size=12, centroid_label_weight='normal'):
     if color_map is None:
         color_map = plt.cm.Paired
     if ax is None:
@@ -1429,7 +1466,7 @@ def plot_categorical(x, y, data, ax=None, buffer_pct=0.03, point_size=5, color_m
     
     if show_centroids:
         for iLab, lab in enumerate(group_labels):
-            ax.text(centroids[iLab,0], centroids[iLab,1], lab, fontsize=centroid_label_size)
+            ax.text(centroids[iLab,0], centroids[iLab,1], lab, fontsize=centroid_label_size, fontweight=centroid_label_weight)
 
     ax.set_xticks([])
     ax.set_yticks([])
@@ -1438,9 +1475,9 @@ def plot_categorical(x, y, data, ax=None, buffer_pct=0.03, point_size=5, color_m
 
     return
 
-def start_subplot_figure(n_subplots, n_columns=5, fig_width=14, row_height=3):
+def start_subplot_figure(n_subplots, n_columns=5, fig_width=14, row_height=3, dpi=75):
     n_rows = int(np.ceil(n_subplots / float(n_columns)))
-    fig = plt.figure(figsize = (fig_width, n_rows * row_height))
+    fig = plt.figure(figsize = (fig_width, n_rows * row_height), dpi=dpi)
     return fig, n_rows, n_columns
 
 def total_counts_histogram(total_counts, log_x=True, counts_per_bin=False, min_bin=10, max_bin=10e5, n_bins=50, ax=None):
