@@ -9,6 +9,7 @@ import os
 import json
 from datetime import datetime
 import matplotlib.pyplot as plt
+import scanpy as sc
 
 ########## LOADING DATA
 def load_genes(filename, delimiter='\t', column=0, skip_rows=0):
@@ -570,6 +571,127 @@ def remove_corr_genes(E, gene_list, exclude_corr_genes_list, test_gene_idx, min_
     exclude_ix = np.array(exclude_ix)
 
     return np.array([g for g in test_gene_idx if g not in exclude_ix], dtype=int)
+
+########## SAMPLE PROJECTION
+def projection_find_shared_genes(adata_ref, adata_query):
+    ''' Find genes present in both AnnData objects '''
+    genes1 = adata_ref.var_names.values.astype(str)
+    genes2 = adata_query.var_names.values.astype(str)
+    shared_genes = np.intersect1d(genes1, genes2)
+
+    adata_ref.var['valid_for_projection'] = False
+    adata_ref.var.loc[shared_genes, 'valid_for_projection'] = True
+    adata_query.var['valid_for_projection'] = False
+    adata_query.var.loc[shared_genes, 'valid_for_projection'] = True
+    
+    return
+
+
+def projection_learn(adata_ref, highvar_genes_column='highly_variable_projection', cell_normalize=True, find_highvar_genes=True, mean_center=True, n_pcs=30, n_neighbors=10, knn_metric='euclidean', random_state=1, **kwargs):
+    ''' Preprocess reference data to "learn" PCA/TruncatedSVD loadings and initialize KNN
+    Requires running `projection_find_shared_genes()` first. 
+
+    Total counts normalization, gene filtering, and decomposition. Automatically stores
+    intermediates needed to apply same transformations to a "query" dataset.
+    - kwargs: for filter_genes function (min_counts, min_cells, min_vscore_pctl)
+
+    Most important results stored in:
+    - adata_ref.uns['projector']
+    - adata_ref.var
+    '''
+    valid_gene_names = adata_ref.var_names[adata_ref.var['valid_for_projection']]
+    adata_tmp = adata_ref.copy()
+    adata_tmp = adata_tmp[:, valid_gene_names]
+
+    if find_highvar_genes is False:
+        if highvar_genes_column in adata_tmp.var.columns:
+            highvar_gene_names = adata_tmp.var_names[adata_tmp.var[highvar_genes_column]]
+        else:
+            print(f'ERROR: could not find "{highvar_genes_column}" in `adata_ref.var` columns, but `find_highvar_genes` is `False`.')
+            print('Please specify a valid column name for `highvar_genes_column` or set `find_highvar_genes` to `True`.')
+            return
+    else:
+        if cell_normalize:
+            sc.pp.normalize_per_cell(adata_tmp, counts_per_cell_after=adata_tmp.X.sum(1).A.squeeze().mean())
+        highvar_gene_names = valid_gene_names[filter_genes(adata_tmp.X, **kwargs)]
+        adata_ref.var[highvar_genes_column] = False
+        adata_ref.var.loc[highvar_gene_names, highvar_genes_column] = True
+
+    if cell_normalize:
+        sc.pp.normalize_per_cell(adata_tmp, counts_per_cell_after=1e4)
+
+    X = adata_tmp[:, highvar_gene_names].X.copy()
+    del adata_tmp
+    gene_means = X.mean(0).A.squeeze()
+    gene_stdevs = np.sqrt(sparse_var(X))
+    
+    adata_ref.var['mean_projection'] = np.nan
+    adata_ref.var['stdev_projection'] = np.nan
+    adata_ref.var.loc[highvar_gene_names, 'mean_projection'] = gene_means
+    adata_ref.var.loc[highvar_gene_names, 'stdev_projection'] = gene_stdevs
+    
+    adata_ref.uns['projector'] = {'params': {'cell_normalize': cell_normalize, 
+                                             'mean_center': mean_center, 
+                                             'highvar_genes_column': highvar_genes_column,
+                                             'n_neighbors': n_neighbors
+                                            }}
+    
+    if mean_center:
+        adata_ref.uns['projector']['decomp'] = PCA(n_components=n_pcs, random_state=random_state)
+        Z = sparse_zscore(X, gene_mean=gene_means, gene_stdev=gene_stdevs)
+    else:
+        adata_ref.uns['projector']['decomp'] = TruncatedSVD(n_components=n_pcs, random_state=random_state)
+        Z = normalize_variance(X, column_stdevs=gene_stdevs)
+
+    adata_ref.uns['projector']['decomp'].fit(Z)
+    adata_ref.obsm['projection'] = adata_ref.uns['projector']['decomp'].transform(Z)
+    
+    adata_ref.uns['projector']['knn'] = NearestNeighbors(n_neighbors=n_neighbors, metric=knn_metric).fit(adata_ref.obsm['projection'])
+
+    return
+
+def projection_apply(adata_ref, adata_query):
+    ''' Projection query into ref stored in `adata_ref` and find nearest neighbors 
+    Requires running `projection_learn()` first.
+
+    Results stored in: 
+    - adata_query.obsm['projection']
+    - adata_query.obsm['projection_neighbors']
+    - adata_query.obsm['projection_distances']
+    '''
+
+    proj_par = adata_ref.uns['projector']['params']
+    hvg_column = proj_par['highvar_genes_column']
+    
+    adata_tmp = adata_query.copy()
+    adata_tmp = adata_tmp[:, adata_tmp.var['valid_for_projection']]
+    
+    if proj_par['cell_normalize']:
+        sc.pp.normalize_per_cell(adata_tmp, counts_per_cell_after=1e4)
+    
+    highvar_gene_names = adata_ref.var_names[adata_ref.var[hvg_column]].values.astype(str)
+    gene_means = adata_ref.var.loc[highvar_gene_names, 'mean_projection'].values
+    gene_stdevs = adata_ref.var.loc[highvar_gene_names, 'stdev_projection'].values
+    
+    adata_tmp = adata_tmp[:, highvar_gene_names]
+    X = adata_tmp.X.copy()
+    del adata_tmp
+    
+    if proj_par['mean_center']:
+        Z = sparse_zscore(X, gene_mean=gene_means, gene_stdev=gene_stdevs)
+    else:
+        Z = normalize_variance(X, column_stdevs=gene_stdevs)
+    
+    adata_query.obsm['projection'] = adata_ref.uns['projector']['decomp'].transform(Z)
+    
+    knn_dist, knn_neigh = adata_ref.uns['projector']['knn'].kneighbors(
+        adata_query.obsm['projection'], 
+        return_distance=True
+    )
+    adata_query.obsm['projection_neighbors'] = knn_neigh
+    adata_query.obsm['projection_distances'] = knn_dist
+    
+    return
 
 
 ########## CELL NORMALIZATION
