@@ -1664,3 +1664,52 @@ def custom_violinplot(data, ax, showmeans=False, showmedians=False, show_xticks=
         
     return parts
 
+
+def plot_categ_bar(data, main_group_label, sub_group_label=None, plot_pct=True, main_x_offset=0.3, bar_width=None, fig_size=(14, 4), show_legend=True):
+    main_group_vals = data[main_group_label].values.astype(str)
+    x_groups = np.unique(main_group_vals)
+    
+    if sub_group_label is None:
+        sub_group_label = 'all cells'
+        sub_group_vals = np.repeat(sub_group_label, data.shape[0])
+        x_subgroups = np.unique(sub_group_vals)
+        sub_x_offsets = [0]
+    else:
+        sub_group_vals = data[sub_group_label].values.astype(str)
+        x_subgroups = np.unique(sub_group_vals)
+        sub_x_offsets = np.linspace(-main_x_offset, main_x_offset, len(x_subgroups))
+    
+    if bar_width is None:
+        bar_width = 2 * main_x_offset / len(x_subgroups)
+
+    plot_dat = {s: [] for s in sub_group_vals}
+    denom = 1
+    for iGroup, group in enumerate(x_groups):
+        for iSub,sub in enumerate(x_subgroups):
+            x = iGroup + sub_x_offsets[iSub]
+            if plot_pct:
+                denom = (sub_group_vals == sub).sum() * 0.01
+            y = (main_group_vals[sub_group_vals == sub] == group).sum() / denom
+            plot_dat[sub].append([x, y])
+    for k,v in plot_dat.items():
+        plot_dat[k] = np.array(v)
+
+    fig, ax = plt.subplots(figsize=fig_size)
+    for s in plot_dat:
+        ax.bar(plot_dat[s][:, 0], plot_dat[s][:, 1], bar_width, label=s)
+
+    if show_legend:
+        ax.legend();
+    ax.set_xticks(np.arange(len(x_groups)));
+    ax.set_xticklabels(x_groups);
+    
+    if plot_pct:
+        ax.set_ylabel('Percent')
+    else:
+        ax.set_ylabel('Count')
+
+    fig.tight_layout()
+    
+    return fig, ax
+
+
