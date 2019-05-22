@@ -10,6 +10,7 @@ import json
 from datetime import datetime
 import matplotlib.pyplot as plt
 import scanpy as sc
+import pandas as pd
 
 ########## LOADING DATA
 def load_genes(filename, delimiter='\t', column=0, skip_rows=0):
@@ -573,21 +574,21 @@ def remove_corr_genes(E, gene_list, exclude_corr_genes_list, test_gene_idx, min_
     return np.array([g for g in test_gene_idx if g not in exclude_ix], dtype=int)
 
 ########## SAMPLE PROJECTION
-def projection_find_shared_genes(adata_ref, adata_query):
+def classifier_find_shared_genes(adata_ref, adata_query):
     ''' Find genes present in both AnnData objects '''
     genes1 = adata_ref.var_names.values.astype(str)
     genes2 = adata_query.var_names.values.astype(str)
     shared_genes = np.intersect1d(genes1, genes2)
 
-    adata_ref.var['valid_for_projection'] = False
-    adata_ref.var.loc[shared_genes, 'valid_for_projection'] = True
-    adata_query.var['valid_for_projection'] = False
-    adata_query.var.loc[shared_genes, 'valid_for_projection'] = True
+    adata_ref.var['valid_for_classification'] = False
+    adata_ref.var.loc[shared_genes, 'valid_for_classification'] = True
+    adata_query.var['valid_for_classification'] = False
+    adata_query.var.loc[shared_genes, 'valid_for_classification'] = True
     
     return
 
 
-def projection_learn(adata_ref, highvar_genes_column='highly_variable_projection', cell_normalize=True, find_highvar_genes=True, mean_center=True, n_pcs=30, n_neighbors=10, knn_metric='euclidean', random_state=1, **kwargs):
+def classifier_learn_pca_projection(adata_ref, highvar_genes_column='highly_variable_projection', cell_normalize=True, find_highvar_genes=True, mean_center=True, n_pcs=30, n_neighbors=10, knn_metric='euclidean', random_state=1, **kwargs):
     ''' Preprocess reference data to "learn" PCA/TruncatedSVD loadings and initialize KNN
     Requires running `projection_find_shared_genes()` first. 
 
@@ -599,7 +600,7 @@ def projection_learn(adata_ref, highvar_genes_column='highly_variable_projection
     - adata_ref.uns['projector']
     - adata_ref.var
     '''
-    valid_gene_names = adata_ref.var_names[adata_ref.var['valid_for_projection']]
+    valid_gene_names = adata_ref.var_names[adata_ref.var['valid_for_classification']]
     adata_tmp = adata_ref.copy()
     adata_tmp = adata_tmp[:, valid_gene_names]
 
@@ -650,7 +651,7 @@ def projection_learn(adata_ref, highvar_genes_column='highly_variable_projection
 
     return
 
-def projection_apply(adata_ref, adata_query):
+def classifier_apply_pca_projection(adata_ref, adata_query):
     ''' Projection query into ref stored in `adata_ref` and find nearest neighbors 
     Requires running `projection_learn()` first.
 
@@ -664,7 +665,7 @@ def projection_apply(adata_ref, adata_query):
     hvg_column = proj_par['highvar_genes_column']
     
     adata_tmp = adata_query.copy()
-    adata_tmp = adata_tmp[:, adata_tmp.var['valid_for_projection']]
+    adata_tmp = adata_tmp[:, adata_tmp.var['valid_for_classification']]
     
     if proj_par['cell_normalize']:
         sc.pp.normalize_per_cell(adata_tmp, counts_per_cell_after=1e4)
@@ -691,6 +692,75 @@ def projection_apply(adata_ref, adata_query):
     adata_query.obsm['projection_neighbors'] = knn_neigh
     adata_query.obsm['projection_distances'] = knn_dist
     
+    return
+
+
+def classifier_learn_max_likelihood(adata_ref, column_name, use_raw=None):
+    if use_raw is None:
+        use_raw = True if adata_ref.raw is not None else False
+
+    adata_ref.uns['max_likelihood'] = {
+        'params': {
+            'use_raw': use_raw,
+            'column_name': column_name
+        }
+    }
+
+    if use_raw:
+        adata_use = sc.AnnData(adata_ref.raw.X.copy())
+        adata_use.var_names = adata_ref.raw.var_names.values.astype(str)
+    else:
+        adata_use = sc.AnnData(adata_ref.X.copy())
+        adata_use.var_names = adata_ref.var_names.values.astype(str)
+
+    groups = adata_ref.obs[column_name].values.astype(str)
+    group_centroids = scipy.sparse.lil_matrix((len(set(groups)), adata_use.shape[1]))
+    group_numbers = np.zeros(len(groups), dtype=int)
+    group_labels = []
+    for iG,g in enumerate(set(groups)):
+        ix = groups == g
+        group_centroids[iG,:] = adata_use.X[ix,:].sum(0)
+        group_numbers[groups == g] = iG
+        group_labels.append(g)
+    group_centroids = group_centroids.toarray()
+    adata_ref.uns['max_likelihood']['profiles'] = pd.DataFrame(
+        data=group_centroids, 
+        index=group_labels, 
+        columns=adata_use.var_names.values.astype(str))
+    return
+
+def classifier_apply_max_likelihood(adata_ref, adata_query, query_use_raw=None, pseudocount=1, postnorm_total=1e4):
+    if query_use_raw is None:
+        query_use_raw = True if adata_query.raw is not None else False
+
+    if query_use_raw:
+        adata_query_use = sc.AnnData(adata_query.raw.X.copy())
+        adata_query_use.var_names = adata_query.raw.var_names.values.astype(str)
+    else:
+        adata_query_use = sc.AnnData(adata_query.X.copy())
+        adata_query_use.var_names = adata_query.var_names.values.astype(str)
+
+    genes1 = adata_ref.uns['max_likelihood']['profiles'].columns.values.astype(str)
+    genes2 = adata_query_use.var_names.values.astype(str)
+    shared_genes = np.intersect1d(genes1, genes2)
+    
+    if len(shared_genes) > 5000:
+        adata_query_use = adata_query_use[:, shared_genes]
+
+        profiles = adata_ref.uns['max_likelihood']['profiles'].loc[:, shared_genes].values.copy()
+        profile_labels = adata_ref.uns['max_likelihood']['profiles'].index.values.astype(str)
+
+        if scipy.sparse.issparse(profiles):
+            profiles = profiles.toarray()
+        
+        profiles = profiles * postnorm_total / np.sum(profiles, axis=1)[:,None]
+        profiles += pseudocount
+        profiles = profiles / np.sum(profiles, axis=1)[:,None]
+        profiles = np.log10(profiles)
+        
+        scores = adata_query_use.X.dot(profiles.T)
+        adata_query.obs['max_likelihood_label'] = profile_labels[scores.argmax(1)]
+
     return
 
 
