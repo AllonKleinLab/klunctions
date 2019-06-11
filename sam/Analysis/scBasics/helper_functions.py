@@ -560,8 +560,12 @@ def remove_corr_genes(E, gene_list, exclude_corr_genes_list, test_gene_idx, min_
     exclude_ix = []
     for iSet in range(len(seed_ix_list)):
         seed_ix = seed_ix_list[iSet][E[:,seed_ix_list[iSet]].sum(axis=0).A.squeeze() > 0]
-
-        tmp = sparse_zscore(E[:,seed_ix])
+        if type(seed_ix) is int:
+            seed_ix = np.array([seed_ix], dtype=int)
+        elif type(seed_ix[0]) is not int:
+            seed_ix = seed_ix[0]
+        indat = E[:, seed_ix]
+        tmp = sparse_zscore(indat)
         tmp = tmp.sum(1).A.squeeze()
 
         c = np.zeros(len(test_gene_idx))
@@ -799,7 +803,7 @@ def tot_counts_norm(E, exclude_dominant_frac = 1, included = [], target_mean = 0
 ########## DIMENSIONALITY REDUCTION
 
 
-def get_pca(E, base_ix=[], numpc=50, keep_sparse=False, normalize=True):
+def get_pca(E, base_ix=[], numpc=50, keep_sparse=False, normalize=True, random_state=0):
     '''
     Run PCA on the counts matrix E, gene-level normalizing if desired
     Return PCA coordinates
@@ -816,7 +820,7 @@ def get_pca(E, base_ix=[], numpc=50, keep_sparse=False, normalize=True):
             Z = sparse_rowwise_multiply(E.T, 1 / zstd).T
         else:
             Z = E
-        pca = TruncatedSVD(n_components=numpc)
+        pca = TruncatedSVD(n_components=numpc, random_state=random_state)
 
     else:
         if normalize:
@@ -825,7 +829,7 @@ def get_pca(E, base_ix=[], numpc=50, keep_sparse=False, normalize=True):
             Z = sparse_rowwise_multiply((E - zmean).T, 1/zstd).T
         else:
             Z = E
-        pca = PCA(n_components=numpc)
+        pca = PCA(n_components=numpc, random_state=random_state)
 
     pca.fit(Z[base_ix,:])
     return pca.transform(Z)
@@ -852,7 +856,7 @@ def preprocess_and_pca(E, total_counts_normalize=True, norm_exclude_abundant_gen
 
 ########## GRAPH CONSTRUCTION
 
-def get_knn_graph(X, k=5, dist_metric='euclidean', approx=False, return_edges=True):
+def get_knn_graph(X, k=5, dist_metric='euclidean', approx=False, return_edges=True, random_seed=0):
     '''
     Build k-nearest-neighbor graph
     Return edge list and nearest neighbor matrix
@@ -873,6 +877,7 @@ def get_knn_graph(X, k=5, dist_metric='euclidean', approx=False, return_edges=Tr
         npc = X.shape[1]
         ncell = X.shape[0]
         annoy_index = AnnoyIndex(npc, metric=dist_metric)
+        annoy_index.set_seed(random_seed)
 
         for i in range(ncell):
             annoy_index.add_item(i, list(X[i,:]))
@@ -1038,9 +1043,12 @@ def rank_enriched_genes(E, gene_list, cell_mask, min_counts=3, min_cells=3, verb
         print('Considering %i genes' %(sum(gix)))
     
     gene_list = gene_list[gix]
+    E = E.copy()[:, gix]
+
+    means = E.mean(0).A.squeeze()
+    stdevs = np.sqrt(sparse_var(E))
+    scores = (E[cell_mask,:].mean(0).A.squeeze() - means) / stdevs
     
-    z = sparse_zscore(E[:,gix])
-    scores = z[cell_mask,:].mean(0).A.squeeze()
     o = np.argsort(-scores)
     
     return gene_list[o], scores[o]
