@@ -1034,6 +1034,81 @@ def get_umap(X, n_neighbors=10, min_dist=0.1, spread=1.0, metric='euclidean', ra
         ).fit_transform(X)
     return embedding
 
+########## SCANPY PREPROCESSING
+def process_ad(adata, normalize=True, min_counts=3, min_cells=3, min_vscore_pctl=85, plot_vscore=False, 
+               n_components=30, n_neighbors=15, umap_min_dist=0.3, leiden_res=1.0, sparse_pca=False,
+               log_transform=False, scale=True, copy=False, random_state=0,
+               exclude_gene_sets=None, exclude_gene_corr=0.2, verbose=False, batch_base_mask=None
+              ):
+    
+    if copy:
+        adata = adata.copy()
+    
+    if batch_base_mask is None:
+        batch_base_mask = np.repeat(True, adata.shape[0])
+    if normalize:
+        if verbose:
+            print('    normalizing...')
+        adata.raw = adata
+        adata.obs['n_counts'] = adata.X.sum(1).A.squeeze()
+        sc.pp.normalize_per_cell(adata, 
+                                 counts_per_cell_after=adata.obs['n_counts'].values[batch_base_mask].mean())
+        
+    if verbose:
+        print('    filtering genes...')
+    hvg = filter_genes(
+        adata.X[batch_base_mask,:], 
+        min_counts=min_counts, 
+        min_cells=min_cells, 
+        min_vscore_pctl=min_vscore_pctl, 
+        show_vscore_plot=plot_vscore)
+    adata.var['highly_variable'] = False
+    adata.var.loc[adata.var_names[hvg], 'highly_variable'] = True
+    if verbose:
+        print(f'        {len(hvg)} highly variable genes')
+    if exclude_gene_sets is not None:
+        hvg = remove_corr_genes(
+            adata.X[batch_base_mask,:], 
+            adata.var_names.values.astype(str),
+            exclude_gene_sets,
+            hvg,
+            min_corr=exclude_gene_corr
+        )
+        if verbose:
+            print(f'        {len(hvg)} genes pass correlation filter')
+    adata.var['highly_variable_prefilt'] = adata.var['highly_variable'].copy()
+    adata.var['highly_variable'] = False
+    adata.var.loc[adata.var_names[hvg], 'highly_variable'] = True
+    
+    if normalize:
+        sc.pp.normalize_per_cell(adata, counts_per_cell_after=1e4, key_n_counts='n_counts2')
+    
+    pca_input = adata.X[:, adata.var['highly_variable'].values].copy()
+    if log_transform:
+        pca_input.data = np.log10(1 + pca_input.data)
+    if verbose:
+        print('    running PCA...')
+    adata.obsm['X_pca'] = get_pca(pca_input, 
+                                     numpc=n_components, 
+                                     keep_sparse=sparse_pca, 
+                                     normalize=scale,
+                                     random_state=random_state,
+                                     base_ix=batch_base_mask
+                                    )
+    del pca_input
+    if verbose:
+        print('    finding neighbors...')
+    sc.pp.neighbors(adata, n_neighbors=n_neighbors, random_state=random_state)
+    if verbose:
+        print('    running UMAP...')
+    sc.tl.umap(adata, min_dist=umap_min_dist, random_state=random_state)
+    if verbose:
+        print('    running Leiden clustering...')
+    sc.tl.leiden(adata, resolution=leiden_res)
+    
+    return adata if copy else None
+
+
 ########## GENE ENRICHMENT
 
 def rank_enriched_genes(E, gene_list, cell_mask, min_counts=3, min_cells=3, verbose=False):
@@ -1607,7 +1682,7 @@ def plot_groups(x, y, groups, buffer_pct=0.03, saving=False, fig_dir='./', fig_n
     if close_after:
         plt.close()
 
-def plot_one_gene(E, gene_list, gene_to_plot, x, y, normalize=False, ax=None, order_points=True, col_range=(0,100), buffer_pct=0.03, point_size=5, color_map=None, smooth_operator=None):
+def plot_one_gene(E, gene_list, gene_to_plot, x, y, normalize=False, ax=None, order_points=True, col_range=(0,100), buffer_pct=0.03, point_size=1, color_map=None, smooth_operator=None):
     if color_map is None:
         color_map = darken_cmap(plt.cm.Reds,.9)
     if ax is None:
@@ -1643,9 +1718,43 @@ def plot_one_gene(E, gene_list, gene_to_plot, x, y, normalize=False, ax=None, or
     ax.set_ylim(y.min()-y.ptp()*buffer_pct, y.max()+y.ptp()*buffer_pct)
     
     return pp
+
+def plot_gene_list(adata, genes_plot, embedding='X_umap', save_filename=None, close_after_save=False, dpi=75, n_columns=6, vmax=99.6, **plot_kwargs):
+    x=adata.obsm[embedding][:,0]
+    y=adata.obsm[embedding][:,1]
+
+
+    fig,nrow,ncol = start_subplot_figure(len(genes_plot), row_height=2.5, n_columns=n_columns, fig_width=16 * n_columns / 6, dpi=dpi)
+    axs = []
+
+    for iG,g in enumerate(genes_plot):
+        ax = plt.subplot(nrow, ncol, iG+1)
+        axs.append(ax)
+        plot_one_gene(
+            adata.X, 
+            adata.var_names.values.astype(str), 
+            g.split(' ')[0], x, y, 
+            ax=ax, 
+            col_range=(0, vmax), 
+            **plot_kwargs
+        )
+        ax.set_title(g)
+
+    fig.tight_layout()
+    
+    if save_filename is not None:
+        save_dir='/'.join(save_filename.rstrip('/').split('/')[:-1])
+        os.makedirs(save_dir, exist_ok=True)
+        plt.savefig(save_filename, dpi=dpi)
+    if close_after_save:
+        plt.close()
+    else:
+        return fig, axs
+
     
 def plot_categorical(x, y, data, ax=None, buffer_pct=0.03, point_size=5, color_map=None, 
-                     show_centroids=False, centroid_label_size=12, centroid_label_weight='normal'):
+                     show_centroids=False, centroid_label_size=12, centroid_label_weight='normal',
+                     centroid_label_align='center'):
     if color_map is None:
         color_map = plt.cm.Paired
     if ax is None:
@@ -1666,7 +1775,7 @@ def plot_categorical(x, y, data, ax=None, buffer_pct=0.03, point_size=5, color_m
     
     if show_centroids:
         for iLab, lab in enumerate(group_labels):
-            ax.text(centroids[iLab,0], centroids[iLab,1], lab, fontsize=centroid_label_size, fontweight=centroid_label_weight)
+            ax.text(centroids[iLab,0], centroids[iLab,1], lab, fontsize=centroid_label_size, fontweight=centroid_label_weight, ha=centroid_label_align)
 
     ax.set_xticks([])
     ax.set_yticks([])
