@@ -11,6 +11,8 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import scanpy as sc
 import pandas as pd
+from distutils.version import LooseVersion, StrictVersion
+
 
 ########## LOADING DATA
 def load_genes(filename, delimiter='\t', column=0, skip_rows=0):
@@ -606,7 +608,7 @@ def classifier_learn_pca_projection(adata_ref, highvar_genes_column='highly_vari
     '''
     valid_gene_names = adata_ref.var_names[adata_ref.var['valid_for_classification']]
     adata_tmp = adata_ref.copy()
-    adata_tmp = adata_tmp[:, valid_gene_names]
+    adata_tmp = adata_tmp[:, valid_gene_names].copy()
 
     if find_highvar_genes is False:
         if highvar_genes_column in adata_tmp.var.columns:
@@ -669,7 +671,7 @@ def classifier_apply_pca_projection(adata_ref, adata_query):
     hvg_column = proj_par['highvar_genes_column']
     
     adata_tmp = adata_query.copy()
-    adata_tmp = adata_tmp[:, adata_tmp.var['valid_for_classification']]
+    adata_tmp = adata_tmp[:, adata_tmp.var['valid_for_classification']].copy()
     
     if proj_par['cell_normalize']:
         sc.pp.normalize_per_cell(adata_tmp, counts_per_cell_after=1e4)
@@ -733,7 +735,7 @@ def classifier_learn_max_likelihood(adata_ref, column_name, use_raw=None):
         columns=adata_use.var_names.values.astype(str))
     return
 
-def classifier_apply_max_likelihood(adata_ref, adata_query, query_use_raw=None, pseudocount=1, postnorm_total=1e4):
+def classifier_apply_max_likelihood(adata_ref, adata_query, query_use_raw=None, pseudocount=1, postnorm_total=1e4, min_shared_genes=100):
     if query_use_raw is None:
         query_use_raw = True if adata_query.raw is not None else False
 
@@ -748,7 +750,7 @@ def classifier_apply_max_likelihood(adata_ref, adata_query, query_use_raw=None, 
     genes2 = adata_query_use.var_names.values.astype(str)
     shared_genes = np.intersect1d(genes1, genes2)
     
-    if len(shared_genes) > 5000:
+    if len(shared_genes) >= min_shared_genes:
         adata_query_use = adata_query_use[:, shared_genes]
 
         profiles = adata_ref.uns['max_likelihood']['profiles'].loc[:, shared_genes].values.copy()
@@ -941,7 +943,7 @@ def get_smooth_values(input_values, adjacency_matrix, beta=0.1, n_rounds=10):
     else:
         smoothed_values = input_values.copy()
 
-    adjacency_matrix = hf.sparse_rowwise_multiply(adjacency_matrix, 1 / adjacency_matrix.sum(1).A.squeeze())
+    adjacency_matrix = sparse_rowwise_multiply(adjacency_matrix, 1 / adjacency_matrix.sum(1).A.squeeze())
     for iRound in range(n_rounds):
         smoothed_values = (beta * smoothed_values + ((1 - beta) * adjacency_matrix) * smoothed_values)
 
@@ -1035,10 +1037,11 @@ def get_umap(X, n_neighbors=10, min_dist=0.1, spread=1.0, metric='euclidean', ra
     return embedding
 
 ########## SCANPY PREPROCESSING
+
 def process_ad(adata, normalize=True, min_counts=3, min_cells=3, min_vscore_pctl=85, plot_vscore=False, 
                n_components=30, n_neighbors=15, umap_min_dist=0.3, leiden_res=1.0, sparse_pca=False,
                log_transform=False, scale=True, copy=False, random_state=0,
-               exclude_gene_sets=None, exclude_gene_corr=0.2, verbose=False, batch_base_mask=None
+               exclude_gene_sets=None, exclude_gene_corr=0.2, exclude_gene_list=None, verbose=False, batch_base_mask=None, run_umap=True, run_leiden=True
               ):
     
     if copy:
@@ -1051,8 +1054,12 @@ def process_ad(adata, normalize=True, min_counts=3, min_cells=3, min_vscore_pctl
             print('    normalizing...')
         adata.raw = adata
         adata.obs['n_counts'] = adata.X.sum(1).A.squeeze()
-        sc.pp.normalize_per_cell(adata, 
-                                 counts_per_cell_after=adata.obs['n_counts'].values[batch_base_mask].mean())
+        if LooseVersion(sc.__version__) > LooseVersion('1.4.1'):
+            sc.pp.normalize_total(adata, target_sum=adata.obs['n_counts'].values[batch_base_mask].mean())
+        else:
+            sc.pp.normalize_per_cell(adata, 
+                               counts_per_cell_after=adata.obs['n_counts'].values[batch_base_mask].mean())
+        
         
     if verbose:
         print('    filtering genes...')
@@ -1079,9 +1086,15 @@ def process_ad(adata, normalize=True, min_counts=3, min_cells=3, min_vscore_pctl
     adata.var['highly_variable_prefilt'] = adata.var['highly_variable'].copy()
     adata.var['highly_variable'] = False
     adata.var.loc[adata.var_names[hvg], 'highly_variable'] = True
+    if exclude_gene_list is not None:
+        exclude_gene_list = [g for g in exclude_gene_list if g in adata.var_names]
+        adata.var.loc[exclude_gene_list, 'highly_variable'] = False
     
     if normalize:
-        sc.pp.normalize_per_cell(adata, counts_per_cell_after=1e4, key_n_counts='n_counts2')
+        if LooseVersion(sc.__version__) > LooseVersion('1.4.1'):
+            sc.pp.normalize_total(adata, target_sum=1e4, key_added='n_counts2')
+        else:
+            sc.pp.normalize_per_cell(adata, counts_per_cell_after=1e4, key_n_counts='n_counts2')
     
     pca_input = adata.X[:, adata.var['highly_variable'].values].copy()
     if log_transform:
@@ -1099,12 +1112,14 @@ def process_ad(adata, normalize=True, min_counts=3, min_cells=3, min_vscore_pctl
     if verbose:
         print('    finding neighbors...')
     sc.pp.neighbors(adata, n_neighbors=n_neighbors, random_state=random_state)
-    if verbose:
-        print('    running UMAP...')
-    sc.tl.umap(adata, min_dist=umap_min_dist, random_state=random_state)
-    if verbose:
-        print('    running Leiden clustering...')
-    sc.tl.leiden(adata, resolution=leiden_res)
+    if run_umap:
+        if verbose:
+            print('    running UMAP...')
+        sc.tl.umap(adata, min_dist=umap_min_dist, random_state=random_state)
+    if run_leiden:
+        if verbose:
+            print('    running Leiden clustering...')
+        sc.tl.leiden(adata, resolution=leiden_res)
     
     return adata if copy else None
 
@@ -1128,7 +1143,35 @@ def rank_enriched_genes(E, gene_list, cell_mask, min_counts=3, min_cells=3, verb
     
     return gene_list[o], scores[o]
 
-def find_markers(norm_counts, gene_list, groups, min_frac_expr=0.01, min_fold_change=2, pseudocount=0.1, max_p=0.05, verbose=False):
+def get_dge(ad, mask1, mask2, min_frac_expr=0.05, pseudocount=1):
+    import statsmodels.sandbox.stats.multicomp
+    import scipy.stats
+    
+    gene_mask = ((ad.X[mask1,:]>0).sum(0).A.squeeze()/mask1.sum() > min_frac_expr) | ((ad.X[mask2,:]>0).sum(0).A.squeeze()/mask2.sum() > min_frac_expr)
+    print(gene_mask.sum())
+    E1 = ad.X[mask1,:][:,gene_mask].toarray()
+    E2 = ad.X[mask2,:][:,gene_mask].toarray()
+    
+    m1 = E1.mean(0) + pseudocount
+    m2 = E2.mean(0) + pseudocount
+    r = np.log2(m1 / m2)
+    
+    pv = np.zeros(gene_mask.sum())
+    for ii,iG in enumerate(np.nonzero(gene_mask)[0]):
+        pv[ii] = scipy.stats.ranksums(E1[:,ii], E2[:,ii])[1]
+    pv = statsmodels.sandbox.stats.multicomp.multipletests(pv, alpha=0.05, method='fdr_bh',)[1]
+    
+    df = pd.DataFrame({
+        'gene': ad.var_names.values.astype(str)[gene_mask],
+        'pv': pv,
+        'm1': m1 - pseudocount, 
+        'm2': m2 - pseudocount, 
+        'ratio': r
+    })
+    
+    return df
+
+def find_markers(norm_counts, gene_list, groups, groups_find=None, min_frac_expr=0.01, min_fold_change=2, pseudocount=0.1, max_p=0.05, verbose=False):
     '''
     norm_counts: normalized counts matrix (scipy.sparse with shape (n_cells, n_genes))
     gene_list: numpy array of gene names (length = n_genes)
@@ -1147,11 +1190,13 @@ def find_markers(norm_counts, gene_list, groups, min_frac_expr=0.01, min_fold_ch
 
     # cluster labels for each cell
     clusts_use = groups.copy() 
+    if groups_find is None:
+        groups_find = np.unique(clusts_use)
 
     # initialize results
     results = {'group': [], 'gene': [], 'p-value': [], 'log2_fold_change': []}
 
-    for c1 in np.unique(clusts_use):
+    for c1 in groups_find:
 
         #############    SETUP 
 
@@ -1204,7 +1249,6 @@ def find_markers(norm_counts, gene_list, groups, min_frac_expr=0.01, min_fold_ch
 
     results = pd.DataFrame(results)[['group', 'gene', 'p-value', 'log2_fold_change']]
     return results
-
 
 ########## SPRING PREP
 
@@ -1652,13 +1696,13 @@ def custom_cmap(rgb_list):
     cmap = cmap.from_list(rgb_list.shape[0],rgb_list)
     return cmap
 
-def plot_groups(x, y, groups, buffer_pct=0.03, saving=False, fig_dir='./', fig_name='fig', res=300, close_after=False, title_size=12, point_size=3, ncol=5):
+def plot_groups(x, y, groups, buffer_pct=0.03, saving=False, fig_dir='./', fig_name='fig', res=300, close_after=False, title_size=12, point_size=3, ncol=5, fig_width=14, row_height=3):
     import matplotlib.pyplot as plt
 
     n_col = int(ncol)
     ngroup = len(np.unique(groups))
     nrow = int(np.ceil(ngroup / float(ncol)))
-    fig = plt.figure(figsize = (14, 3 * nrow))
+    fig = plt.figure(figsize = (fig_width, row_height * nrow))
     for ii, c in enumerate(np.unique(groups)):
         ax = plt.subplot(nrow, ncol, ii+1)
         ix = groups == c
@@ -1750,6 +1794,47 @@ def plot_gene_list(adata, genes_plot, embedding='X_umap', save_filename=None, cl
         plt.close()
     else:
         return fig, axs
+
+def plot_continuous(adata, var_name, embedding='X_umap', ax=None, order_points=False, 
+                    col_range=(0,100), buffer_pct=0.03, point_size=1, color_map=None, 
+                    log_transform=False, pseudocount=1):
+
+    x = adata.obsm[embedding][:,0]
+    y = adata.obsm[embedding][:,1]
+
+    if color_map is None:
+        color_map = darken_cmap(plt.cm.Reds,.9)
+    if ax is None:
+        fig,ax=plt.subplots()
+
+    coldat = adata.obs_vector(var_name)
+    #if var_name in adata.var_names:
+    #    coldat = adata[:, var_name].X.squeeze().copy()
+    #else:
+    #    coldat = adata.obs[var_name].values.copy()
+        
+    if log_transform:
+        coldat = np.log10(pseudocount + coldat)
+        
+    if order_points:
+        o = np.argsort(coldat)
+    else:
+        o = np.arange(len(coldat))
+
+    vmin = np.percentile(coldat, col_range[0])
+    vmax = np.percentile(coldat, col_range[1])
+    if vmax==vmin:
+        vmax = coldat.max()
+    
+    pp = ax.scatter(x[o], y[o], c=coldat[o], s=point_size, cmap=color_map,
+               vmin=vmin, vmax=vmax)
+
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_xlim(x.min()-x.ptp()*buffer_pct, x.max()+x.ptp()*buffer_pct)
+    ax.set_ylim(y.min()-y.ptp()*buffer_pct, y.max()+y.ptp()*buffer_pct)
+
+    return pp
 
     
 def plot_categorical(x, y, data, ax=None, buffer_pct=0.03, point_size=5, color_map=None, 

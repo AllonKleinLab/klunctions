@@ -24,8 +24,7 @@ module load rsem/1.3.0
 mkdir -p ${logdir}
 
 pyenv=/n/groups/klein/sam/pyndrops
-#indrops=/n/groups/klein/sam/pipelines/indrops_common/indrops/indrops.py
-indrops=/n/groups/klein/sam/pipelines/indrops_common/test/indrops/indrops.py
+indrops=/n/groups/klein/sam/pipelines/indrops_common/indrops/indrops.py
 myPython=/n/groups/klein/sam/pyndrops/bin/python
 source ${pyenv}/bin/activate ${pyenv}
 
