@@ -1,6 +1,6 @@
 # Single-cell Hashing
 Single-cell hashing methods are a group of molecular tools designed for sample multiplexing in droplet-based single cell transcriptome barcoding platforms. They are based on genetic labeling of cells with sample-specific barcodes before pooling and single-cell isolation. These genetic barcodes possess a poly-A tail rendering their capture during transcriptome barcoding reaction. Hashing approaches address the constrains of parallel processing of individual samples and expand the limitation of Poissonian statistics based single-cell encapsulation events. Both of these factors affect the sample processing throughput and increase the consumption of reagents and time.
-![Scheme](/misc/scheme1.png)
+![Scheme](https://github.com/AllonKleinLab/klunctions/Ignas/Hashing/misc/scheme1.png)
 # Extracting the hashtag barcodes
 When hashing is used with the InDrops protocol, molecules that house **sample index**, **cell barcode** and **hashtag (HTO) barcode** are created. 
 1.	**OPTIONAL** Run Standard InDrops pipeline on the transcriptome data (If you don’t want the Transcriptome data and you only did MiSeq on the hashtags, ignore this step).
